@@ -43,7 +43,11 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
   end
 
   fixtures :all
-  self.use_transactional_fixtures = true
+  if respond_to?(:use_transactional_tests=)
+    self.use_transactional_tests = true
+  else
+    self.use_transactional_fixtures = true
+  end
   
   test "it lists explicitly given columns for loading on demand" do
     assert_equal ["file_data", "processing_log", "original_filename"], Explicit.columns_to_load_on_demand
@@ -54,11 +58,11 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
   end
   
   test "it selects all the other columns for loading eagerly" do
-    assert_match /\W*id\W*, \W*results\W*, \W*processed_at\W*/, Explicit.default_select(false)
-    assert_match /\W*explicits\W*.results/, Explicit.default_select(true)
+    assert_match(/\W*id\W*, \W*results\W*, \W*processed_at\W*/, Explicit.default_select(false))
+    assert_match(/\W*explicits\W*.results/, Explicit.default_select(true))
     
-    assert_match /\W*id\W*, \W*original_filename\W*, \W*processed_at\W*/, Implicit.default_select(false)
-    assert_match /\W*implicits\W*.original_filename/, Implicit.default_select(true)
+    assert_match(/\W*id\W*, \W*original_filename\W*, \W*processed_at\W*/, Implicit.default_select(false))
+    assert_match(/\W*implicits\W*.original_filename/, Implicit.default_select(true))
   end
   
   test "it doesn't load the columns_to_load_on_demand straight away when finding the records" do
@@ -92,10 +96,10 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
 
     record = Implicit.first
     assert_not_loaded record, "file_data"
-    assert_equal nil, record.file_data
+    assert_nil record.file_data
     assert_loaded record, "file_data"
     assert_no_queries do
-      assert_equal nil, record.file_data
+      assert_nil record.file_data
     end
   end
   
@@ -132,6 +136,18 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
       assert !attributes["processing_log"].blank?
     end
   end
+
+  test "it doesn't load the column when generating #attributes if not included in the select() list" do
+    attributes = Implicit.select("id, original_filename").first.attributes
+    assert_equal "somefile.txt", attributes["original_filename"]
+    assert !attributes.has_key?("file_data")
+  end
+
+  test "it loads the column when generating #attributes if included in the select() list" do
+    attributes = Implicit.select("id, original_filename, file_data").first.attributes
+    assert_equal "somefile.txt", attributes["original_filename"]
+    assert_equal "This is the file data!", attributes["file_data"]
+  end
   
   test "it loads the column when generating #to_json" do
     ActiveRecord::Base.include_root_in_json = true
@@ -156,8 +172,29 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
 
     assert_not_loaded record, "file_data"
     assert_equal "New file data", record.file_data
+    assert_not_equal old_object_id, record.file_data.object_id
   end
   
+  test "it does not think the column has been loaded if a reloaded instance that has not loaded the attribute is saved" do
+    record = Implicit.first
+    record.update_attributes!(:file_data => "New file data")
+
+    record.reload
+    record.save!
+
+    assert_equal "New file data", record.file_data
+  end
+
+  test "it does not think the column has been loaded if a fresh instance that has not loaded the attribute is saved" do
+    record = Implicit.first
+    record.update_attributes!(:file_data => "New file data")
+
+    record = Implicit.find(record.id)
+    record.save!
+
+    assert_equal "New file data", record.file_data
+  end
+
   test "it doesn't override custom select() finds" do
     record = Implicit.select("id, file_data").first
     klass = ActiveRecord.const_defined?(:MissingAttributeError) ? ActiveRecord::MissingAttributeError : ActiveModel::MissingAttributeError
@@ -194,42 +231,7 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
     assert_equal "This is the file data!", record.file_data # check it doesn't raise
   end
   
-  test "it updates the select strings when columns are changed and the column information is reset" do
-    ActiveRecord::Schema.define(:version => 1) do
-      create_table :dummies, :force => true do |t|
-        t.string   :some_field
-        t.binary   :big_field
-      end
-    end
-
-    class Dummy < ActiveRecord::Base
-      columns_on_demand
-    end
-
-    assert_match /\W*id\W*, \W*some_field\W*/, Dummy.default_select(false)
-
-    ActiveRecord::Schema.define(:version => 2) do
-      create_table :dummies, :force => true do |t|
-        t.string   :some_field
-        t.binary   :big_field
-        t.string   :another_field
-      end
-    end
-
-    assert_match /\W*id\W*, \W*some_field\W*/, Dummy.default_select(false)
-    Dummy.reset_column_information
-    assert_match /\W*id\W*, \W*some_field\W*, \W*another_field\W*/, Dummy.default_select(false)
-  end
-  
   test "it handles STI models" do
-    ActiveRecord::Schema.define(:version => 1) do
-      create_table :stis, :force => true do |t|
-        t.string   :type
-        t.string   :some_field
-        t.binary   :big_field
-      end
-    end
-
     class Sti < ActiveRecord::Base
       columns_on_demand
     end
@@ -238,8 +240,8 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
       columns_on_demand :some_field
     end
 
-    assert_match /\W*id\W*, \W*type\W*, \W*some_field\W*/, Sti.default_select(false)
-    assert_match /\W*id\W*, \W*type\W*, \W*big_field\W*/,  StiChild.default_select(false)
+    assert_match(/\W*id\W*, \W*type\W*, \W*some_field\W*/, Sti.default_select(false))
+    assert_match(/\W*id\W*, \W*type\W*, \W*big_field\W*/,  StiChild.default_select(false))
   end
   
   test "it works on child records loaded from associations" do
@@ -320,5 +322,40 @@ class ColumnsOnDemandTest < ActiveSupport::TestCase
     reference_sql = implicits.project(implicits[:id]).to_sql
     select_sql = Implicit.select("#{Implicit.quoted_table_name}.#{Implicit.connection.quote_column_name("id")}").to_sql
     assert_equal select_sql, reference_sql
+  end
+end
+
+class ColumnsOnDemandSchemaTest < ActiveSupport::TestCase
+  if respond_to?(:use_transactional_tests=)
+    self.use_transactional_tests = false
+  else
+    self.use_transactional_fixtures = false
+  end
+
+  test "it updates the select strings when columns are changed and the column information is reset" do
+    ActiveRecord::Schema.define(:version => 1) do
+      create_table :dummies, :force => true do |t|
+        t.string   :some_field
+        t.binary   :big_field
+      end
+    end
+
+    class Dummy < ActiveRecord::Base
+      columns_on_demand
+    end
+
+    assert_match(/\W*id\W*, \W*some_field\W*/, Dummy.default_select(false))
+
+    ActiveRecord::Schema.define(:version => 2) do
+      create_table :dummies, :force => true do |t|
+        t.string   :some_field
+        t.binary   :big_field
+        t.string   :another_field
+      end
+    end
+
+    assert_match(/\W*id\W*, \W*some_field\W*/, Dummy.default_select(false))
+    Dummy.reset_column_information
+    assert_match(/\W*id\W*, \W*some_field\W*, \W*another_field\W*/, Dummy.default_select(false))
   end
 end
